@@ -1,0 +1,315 @@
+---
+title: "TADA Assignment 1"
+author: "Daniel Alohan"
+format: pdf
+editor: visual
+---
+
+#Install Packages
+
+```{r}
+install.packages("pacman")
+pacman::p_load(tm, rtweet, SnowballC, wordcloud, lsa, stringr, lubridate, ISOcodes)
+```
+
+#Download CSV files
+```{r}
+set1 <- read.csv("TADA_A1_set1.csv")
+set2 <- read.csv("TADA_A1_set2.csv")
+```
+
+#Question 1 - Date Ranges and Information in CSV files (2pt)
+```{r}
+
+#Date range set 1
+date_range_set1 <- range(set1$date)
+
+#Date range for set 2 
+
+set2$date <- as.Date(set2$date, format = "%Y-%m-%d")
+valid_dates <- set2$date[!is.na(set2$date)] #remove NA values in date columnn 
+date_range_set2 <-range(valid_dates)
+
+#Print the date ranges
+date_range_set1
+date_range_set2
+
+#Information in CSV files
+colnames(set1)
+colnames(set2)
+
+```
+
+#Question 2 - Total Number of Posts in Each Set (1pt)
+```{r}
+
+summary(set1)
+summary(set2)
+
+```
+
+#Question 3 - Total Tweets Re: Methadone, Suboxone, & Fentanyl. (2pts)
+
+##Preprocessing
+```{r}
+#Merge datasets
+combined_set <- rbind(set1, set2)
+
+#Load tweets as VectorSource into a Corpus
+combined_corpus <- Corpus(VectorSource(combined_set$text))
+
+#Lowercase all texts
+combined_corpus <- tm_map(combined_corpus, content_transformer(tolower))
+
+#Remove punctuations 
+combined_corpus <- tm_map(combined_corpus, removePunctuation)
+
+#Remove stopwords
+combined_corpus <- tm_map(combined_corpus, removeWords, stopwords("english"))
+
+#Stem document
+combined_corpus <- tm_map(combined_corpus, stemDocument)
+```
+
+
+##Total Tweets
+```{r}
+#Define pattern of words "|" means "or"
+substances <- "methadon|suboxon|fent|fentanyl"
+
+#Covert corpus to a character vector for searching
+combined_text <- sapply(combined_corpus, as.character)
+
+#Search tweets in the combined corpus with substances mentioned
+matched_tweets <- grep(substances, combined_text, ignore.case = TRUE)
+
+#Total number of matching tweets
+total_tweets <- length(matched_tweets)
+
+#Print total count
+total_tweets
+
+```
+
+#Question 4 - Fentanyl Analogs (1pt)
+```{r}
+#Define key analogs for searching
+fentanyl_analogs <- "carfentanil|furanylfentanyl|cyclopropylfentanyl|acrylfentanyl|acetylfentanyl"
+
+#search tweets in combined text corpus for analogs
+matched_analogs <- grep(fentanyl_analogs, combined_text, ignore.case = TRUE)
+
+#Total tweets discussing fentanyl analogs
+total_analogs_tweets <- length(matched_analogs)
+
+#Print total count of tweets discussing fentanyl analogs
+total_analogs_tweets
+ 
+```
+
+#Question 5 - Words Associated with Methadone, Suboxone, & Fentanyl
+```{r}
+
+#Create document term matrix
+dtm <- DocumentTermMatrix(combined_corpus)
+
+#Remove sparse terms; keep terms that appear in at least 95% of documents
+dtm_sparse <- removeSparseTerms(dtm, 0.99)
+
+#associations for each substance
+methadon_associations <- findAssocs(dtm_sparse, "methadon", 0.05)
+suboxon_associations <- findAssocs(dtm_sparse, "suboxon", 0.09)
+fent_associations <- findAssocs(dtm_sparse, "fent", 0.2)
+
+#Print associations
+methadon_associations
+suboxon_associations
+fent_associations
+```
+
+#Question 6 - Word Cloud for Each Set
+##Preprocessing Each Set
+```{r}
+
+#Create a function for text preprocessing
+preprocess_text <- function(text_data) {
+  corpus <- Corpus(VectorSource(text_data))
+  corpus <- tm_map(corpus, content_transformer(tolower))
+  corpus <- tm_map(corpus, removePunctuation)
+  corpus <- tm_map(corpus, removeWords, stopwords("english"))
+  corpus <- tm_map(corpus, stemDocument)
+  return(corpus)
+}
+
+#Preprocess both sets
+set1_corpus <- preprocess_text(set1$text)
+set2_corpus <- preprocess_text(set2$text)
+
+#Create DTM for both sets
+dtm_set1 <- DocumentTermMatrix(set1_corpus)
+dtm_set2 <- DocumentTermMatrix(set2_corpus)
+
+# Remove sparse terms; keep terms that appear in at least 99% of documents
+dtm_set1_sparse <- removeSparseTerms(dtm_set1, 0.9)
+dtm_set2_sparse <- removeSparseTerms(dtm_set2, 0.9)
+```
+##Word Cloud for Each Set
+```{r}
+wordcloud(set1_corpus,
+          min.freq = 10, max.words = 100, 
+          scale = c(3, 0.4), 
+          random.order = FALSE, 
+          colors = brewer.pal(12, "Set3"))
+
+
+#Set 2 Word Cloud
+wordcloud(set2_corpus,
+          min.freq = 10, max.words = 100, 
+          scale = c(3, 0.1), 
+          random.order = FALSE, 
+          colors = brewer.pal(12, "Set3"))
+
+```
+
+#Question 7 - Time-Series Figure to Compare Frequences
+##Preprocess Data
+```{r}
+#Load libraries for visualization
+pacman::p_load(ggplot2, dplyr)
+
+#add date column to combined set
+combined_set$date <- as.Date(combined_set$date, format = "%Y-%m-%d")
+
+#remove rows with NA values in date column 
+combined_set <- combined_set[!is.na(combined_set$date), ]
+
+#Define function to count mentions of substances by date
+mentions_by_date <- function(data, pattern) {
+  data %>%
+    filter(grepl(pattern, text, ignore.case = TRUE)) %>%
+    group_by(date) %>%
+    summarise(count = n(), .groups = 'drop')
+}
+
+#Count mentions for each substance
+methadon_counts <- mentions_by_date(combined_set, "methadon")
+suboxon_counts <- mentions_by_date(combined_set, "suboxon")
+fentanyl_counts <- mentions_by_date(combined_set, "fent|fentanyl")
+
+#Merge counts into one data frame
+combined_counts <- methadon_counts %>%
+  rename(methadon = count) %>%
+  full_join(suboxon_counts %>% rename(suboxon = count), by = "date") %>%
+  full_join(fentanyl_counts %>% rename(fentanyl = count), by = "date")
+
+#Remove rows with NA values from the combined counts
+combined_counts <- combined_counts[complete.cases(combined_counts), ]
+```
+
+##Plot Results
+```{r}
+#Reshape data for plotting
+pacman::p_load(tidyr)
+
+combined_counts_long <- combined_counts %>%
+  pivot_longer(cols = c("methadon", "suboxon", "fentanyl"),
+               names_to = "substance",
+               values_to = "count")
+
+#Create the time-series plot
+ggplot(combined_counts_long, aes(x = date, y = count, color = substance)) +
+  geom_line(size = 1) +
+  labs(title = "Mentions of Methadone, Suboxone, and Fentanyl Over Time",
+       x = "Date",
+       y = "Number of Mentions") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+ggsave("TADA 1_time_series_plo.png", width = 8, height = 6, dpi = 300)
+
+```
+
+
+#Question 8 - Top 10 bi-grams in each of the three sets
+##Packages
+```{r}
+pacman::p_load(tidytext, ggplot2, dplyr)
+```
+
+##Full code (must run together)
+```{r}
+#Filter tweets for each substance
+substances_patterns <- list(
+  methadon = "methadon",
+  suboxon = "suboxon",
+  fentanyl = "fent|fentanyl"
+)
+
+filtered_data_list <- list()
+
+#Loop through each substance to filter tweets
+for (substance in names(substances_patterns)) {
+  pattern <- substances_patterns[[substance]]
+  
+  #Filter combined_set for the substance and store it
+  filtered_data_list[[substance]] <- combined_set %>%
+    filter(grepl(pattern, text, ignore.case = TRUE))
+  
+  #Print the number of tweets found for each substance
+  cat("Number of tweets for", substance, ":", nrow(filtered_data_list[[substance]]), "\n")
+}
+
+#Generate bigrams for each dataset
+generate_bigrams <- function(data) {
+  data %>%
+    unnest_tokens(bigram, text, token = "ngrams", n = 2)
+}
+
+#Initialize a list to store bigrams for each substance
+bigrams_list <- list()
+
+#Loop through each filtered dataset to generate bigrams
+for (substance in names(filtered_data_list)) {
+  if (nrow(filtered_data_list[[substance]]) > 0) {  # Check if data exists
+    bigrams_list[[substance]] <- generate_bigrams(filtered_data_list[[substance]])
+  } else {
+    bigrams_list[[substance]] <- data.frame(bigram = character(), n = integer())  # Create empty data frame
+  }
+}
+
+#Count frequency and extract top 10 bigrams for each substance
+top_bigrams_list <- list()
+
+#Loop through each bigram dataset to count frequencies
+for (substance in names(bigrams_list)) {
+  if (nrow(bigrams_list[[substance]]) > 0) {
+    top_bigrams_list[[substance]] <- bigrams_list[[substance]] %>%
+      count(bigram, sort = TRUE) %>%
+      top_n(10, n)
+  } else {
+    top_bigrams_list[[substance]] <- data.frame(bigram = character(), n = integer())  # Create empty data frame
+  }
+}
+
+#Plot results
+plot_bigrams <- function(top_bigrams, title) {
+  ggplot(top_bigrams, aes(x = reorder(bigram, n), y = n)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    coord_flip() +
+    labs(title = title, x = "Bigrams", y = "Frequency") +
+    theme_minimal()
+}
+
+#Plot for each substance
+for (substance in names(top_bigrams_list)) {
+  if (nrow(top_bigrams_list[[substance]]) > 0) {
+    plot <- plot_bigrams(top_bigrams_list[[substance]], paste("Top 10 Bigrams for", substance))
+
+#Save each plot 
+   ggsave(paste0("Top_10_Bigrams_", substance, ".png"), plot = plot, width = 8, height = 6, dpi = 300)
+  } else {
+    cat("No bigrams found for", substance, "\n")
+  }
+}
+```
+
