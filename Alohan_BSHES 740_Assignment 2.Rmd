@@ -1,0 +1,373 @@
+---
+title: "BSHES 740 Assignment 1"
+author: "Daniel Alohan"
+date: "2024-11-13"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+#QUESTION 1 - Superived Classification Experiment
+
+##1.1 Install and load needed packages and annotated data
+```{r}
+install.packages("pacman")
+
+pacman::p_load(dplyr, caret, caTools, tm, mlapi, e1071)
+
+annotated_data <- read.csv('TADA_Annotated_data_2024.csv')
+```
+
+##1.2 Preprocessing of Annotated Data
+```{r}
+#Extract only the text column
+all_texts <- annotated_data$text
+
+#Create Corpus from Vector of Text Data
+all_texts_corpus <- VCorpus(VectorSource(all_texts))
+
+#Convert all text to lowercase
+all_texts_corpus <- tm_map(all_texts_corpus,
+                           content_transformer(tolower))
+
+#Remove punctuations from text
+all_texts_corpus <- tm_map(all_texts_corpus,
+                           removePunctuation)
+
+#Remove stop words from text
+all_texts_corpus <- tm_map(all_texts_corpus,
+                           removeWords,stopwords("english"))
+
+#Reduce words to their root forms
+all_texts_corpus <- tm_map(all_texts_corpus,
+                           stemDocument)
+
+#Confirm total # of documents in corpus (should align w original #)
+length(all_texts_corpus)
+```
+
+##1.2a Generate N-Grams
+```{r}
+#Define NLP tokenizer function
+NLP_tokenizer <- function(x) {
+  unlist(lapply(ngrams(words(x), 1:1), paste, collapse = "_"), 
+         use.names = FALSE)
+}
+
+#Apply NLP tokenizer function to each document to create n-grams
+n_gram_corpus <- tm_map(all_texts_corpus,
+                        content_transformer(NLP_tokenizer))
+
+#View Corpus Length to Ensure N-Grams Generated Correctly
+length(n_gram_corpus)
+```
+
+##1.3 Split Data into Training and Test Sets
+```{r}
+#Set random seed
+set.seed(1234)
+
+#Split data into a 80-20 split for training and test, respectively
+split <-sample.split(annotated_data$class, SplitRatio=0.8)
+
+#subset n_gram corpus for training set
+training_ngram_corpus <- subset(n_gram_corpus, split==TRUE)
+
+#subset n_gram corpus for test set
+eval_ngram_corpus <- subset(n_gram_corpus, split==FALSE)
+
+#subset classess from annotated data for training set
+training_classes <- subset(annotated_data$class, split==TRUE)
+
+#subset classes from annotated data to get test set
+eval_classes <- subset(annotated_data$class, split==FALSE)
+```
+###1.3a DTM and Vectorizing
+```{r}
+#Generate DTM for training set
+training_dct_matrix <- DocumentTermMatrix(training_ngram_corpus)
+
+#Remove Sparse n-grams
+training_dct_matrix_sparse <- removeSparseTerms(training_dct_matrix, 0.995)
+
+#DTM for Test Set
+eval_dct_matrix_sparse <- DocumentTermMatrix(eval_ngram_corpus,
+                                             list(dictionary = colnames(training_dct_matrix_sparse)))
+
+```
+
+###1.3b Convert data frame for prediction
+```{r}
+training_term_matrix_df <- as.data.frame(as.matrix(training_dct_matrix_sparse))
+
+eval_term_matrix_df <- as.data.frame(as.matrix(eval_dct_matrix_sparse))
+
+#Clean column names for R compatibility
+colnames(training_term_matrix_df) <- make.names(colnames(training_term_matrix_df))
+colnames(eval_term_matrix_df) <- make.names(colnames(eval_term_matrix_df))
+
+#Add class label to training data frame
+training_term_matrix_df$class <- training_classes
+training_term_matrix_df$class <- as.factor(training_term_matrix_df$class)
+```
+
+###1.3c Identifying Best Hyperparameter
+```{r}
+i <- 1
+while (i <= 32) {
+  trained_model <- svm(class ~ ., 
+                       data = training_term_matrix_df, 
+                       cost = i)
+
+  predictions <- predict(trained_model, 
+                         newdata = eval_term_matrix_df)
+  
+  eval_classes <- factor(eval_classes)
+  predictions <- factor(predictions, 
+                        levels = levels(eval_classes))
+  
+  print(i)
+  
+  print(confusionMatrix(eval_classes, predictions))
+  
+  i <- i * 2
+}
+```
+
+##1.4 Develop Trained Model
+*Based on the assessment above, the best hyperparameter is cost = 2.
+```{r}
+#Train final model with best cost value
+trained_model <- svm(class ~.,
+                     data=training_term_matrix_df,
+                     cost=2)
+```
+
+###1.4a Model Predictions Based on Trained Model
+```{r}
+#Make prediction with trained model on test set
+predictions <- predict(trained_model,
+                       newdata=eval_term_matrix_df)
+```
+
+###1.4b Evaluate Model Performance
+```{r}
+print(confusionMatrix(eval_classes,
+                      predictions))
+```
+
+#QUESTION 2 - CLASSIFIER COMPARISONS
+
+##2.1a 1st Classifer: K-Nearest Neighbors
+```{r}
+#Preprocess and scale the training data
+preproc <- preProcess(training_term_matrix_df[, -ncol(training_term_matrix_df)],
+                      method = c("center", "scale")
+                      )
+
+scaled_training <-predict(preproc, training_term_matrix_df[, -ncol(training_term_matrix_df)])
+
+#Add class column to scaled training data
+scaled_training$class <-training_term_matrix_df$class
+
+#Scale eval set using same parameters as above
+scaled_eval <- predict(preproc, eval_term_matrix_df)
+
+#Train KNN model and make predictions
+set.seed(123)
+
+knn_model <- train(class ~ .,
+                   data = scaled_training, 
+                   method = "knn", 
+                   trControl = trainControl(method = "cv"),
+                   tuneGrid = data.frame(k = c(3,5,7))
+                   )
+
+#Train best performing model with scaled data
+best_k <-knn_model$bestTune$k
+
+best_knn_model <- knn3(class ~ .,
+                   data = training_term_matrix_df,
+                   k = best_k
+                   )
+
+#Predict labels for unseen test dataset
+knn_predictions <- predict(best_knn_model, 
+                           newdata = scaled_eval,
+                           type = "class")
+
+#Calculate confusion matrix
+knn_conf_matrix <- confusionMatrix(knn_predictions,
+                                   eval_classes)
+#View KNN confusion matrix
+print(knn_conf_matrix)
+```
+
+##2.1b 2nd Classifer: Random Forest
+```{r}
+#Train random forest model
+rf_model <- train(class ~ ., 
+                  data = training_term_matrix_df, 
+                  method = "rf", 
+                  trControl = trainControl(method = "cv", number = 5), 
+                  tuneLength = 5,
+                  ntree = 100)
+
+#Predict labels for test data using trained model
+rf_predictions <- predict(rf_model, 
+                          newdata = eval_term_matrix_df)
+
+#Calculate confusion matrix
+rf_conf_matrix <- confusionMatrix(rf_predictions, 
+                                  eval_classes)
+#View RF confusion matrix
+print(rf_conf_matrix)
+```
+
+##2.1c 3rd Classifer: Naive Bayes Classification
+```{r}
+
+#Train Naive Bayes model
+nb_model <- train(class ~ .,
+                  data = training_term_matrix_df,
+                  method = "nb", 
+                  trControl = trainControl(method = "cv", number = 5), 
+                  tuneLength = 5)
+
+#Make predictions on test Bayes model
+nb_predictions <- predict(nb_model, newdata = eval_term_matrix_df)
+
+#Calculate confusion matrix
+nb_conf_matrix <- confusionMatrix(nb_predictions,
+                                  eval_classes)
+#View NB confusion matrix
+print(nb_conf_matrix)
+```
+
+##2.1d 4th Classifer: Support Vector Machine
+```{r}
+svm_model <- train(class ~ .,
+                   data = training_term_matrix_df,
+                   method = "svmRadial",
+                   trControl = trainControl(method = "cv",
+                                            number = 5),
+                   tuneLength = 5)
+
+svm_predictions <- predict(svm_model, 
+                          newdata = eval_term_matrix_df)
+
+svm_conf_matrix <- confusionMatrix(svm_predictions,
+                                   eval_classes)
+
+print(svm_conf_matrix)
+```
+
+#QUESTION 3 - AUTOMATICALLY CLASSIFY UNLABELED DATA
+
+##3.1. Load Unlabeled Data as Data Frame
+```{r}
+unlabeled_data <- read.csv('TADA_unlabeled_data_2024.csv')
+```
+
+##3.2. Preprocess Unlabeled Data
+```{r}
+ul_texts <- unlabeled_data$text
+
+ul_texts_corpus <- VCorpus(VectorSource(ul_texts))
+
+ul_texts_corpus <- tm_map(ul_texts_corpus,
+                           content_transformer(tolower))
+
+ul_texts_corpus <- tm_map(ul_texts_corpus,
+                           removePunctuation)
+
+ul_texts_corpus <- tm_map(ul_texts_corpus,
+                          removeWords,stopwords("english"))
+
+ul_texts_corpus <- tm_map(ul_texts_corpus,
+                          stemDocument)
+length(ul_texts_corpus)
+
+#Generate DTM for unlabeled data
+ul_dct_matrix <- DocumentTermMatrix(ul_texts_corpus,
+                                    list(dictionary = colnames(training_dct_matrix_sparse)))
+
+#Convert data frame for prediction
+ul_term_matrix_df <- as.data.frame(as.matrix(ul_dct_matrix))
+
+#clean column names for consistency
+colnames(ul_term_matrix_df) <- make.names(colnames(ul_term_matrix_df))
+```
+
+##3.3. Run Best Model Classifer on Unlabeled Data
+```{r}
+ul_predictions <- predict(svm_model,
+                          newdata = ul_term_matrix_df)
+```
+
+##3.4. Map Predictions to Instances
+```{r}
+unlabeled_data$predicted_class <- ul_predictions
+
+print(unlabeled_data)
+```
+
+#QUESTION 4 - COMPARE PREDICTIONS AT TWO LOCATION
+
+##4.0 Data Preparation 
+```{r}
+#Filter data for nonmedical use tweets
+nonmedical_data <- subset(unlabeled_data, 
+                          predicted_class == 0)
+
+```
+
+##4.1. Map predictions to each location and gender identity
+```{r}
+#Frequency table by city * gender identity
+location_gender_counts <- table(nonmedical_data$city,
+                                nonmedical_data$gender_id)
+
+print(location_gender_counts) #should total 15,000
+
+#Count nonmedical use reports in each city
+total_nm_reports_A <- sum(nonmedical_data$city == "A")
+total_nm_reports_B <- sum(nonmedical_data$city == "B")
+
+total_nm_reports_A
+total_nm_reports_B
+
+#Calculate total # tweets in each city
+total_tweets_A <- sum(unlabeled_data$city == "A")
+total_tweets_B <- sum(unlabeled_data$city == "B")
+
+```
+
+##4.2. Compare frequencies appropriately
+```{r}
+#Proportion of NM use tweets in each city
+prop_nm_A <- (total_nm_reports_A / total_tweets_A) * 100
+prop_nm_B <- (total_nm_reports_B / total_tweets_B) * 100
+
+#Population Information
+pop_A <- 500000
+pop_B <- 10000
+
+#Calculate pop-adjusted NM use report rate per 100,000 ppl
+pop_adjusted_A <- (total_nm_reports_A / pop_A) * 100000
+pop_adjusted_B <- (total_nm_reports_B / pop_B) * 100000
+
+#Data frame for comparison of results
+comparison_data <- data.frame(
+  City = c('A', 'B'),
+    Total_Posts = c(total_tweets_A, total_tweets_B),
+    Total_NM_use_Reports = c(total_nm_reports_A,
+                             total_nm_reports_B),
+    Proportion_of_NM_use_Tweets = c(prop_nm_A,
+                                    prop_nm_B),
+    Pop_Adjusted_Rate = c(pop_adjusted_A, pop_adjusted_B)
+  )
+
+print(comparison_data)
+```
+
